@@ -1,0 +1,78 @@
+name: Nightly debs
+
+on:
+  push:
+    branches: [main, master]
+  schedule:
+    - cron: '17 3 * * *'   # daily, latest head build
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build-deb:
+    name: deb PG ${{ matrix.pg }} / ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-22.04, ubuntu-24.04]
+        pg: ['16', '17', '18']
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Add PGDG apt repository
+        run: |
+          set -eux
+          sudo apt-get update
+          sudo apt-get install -y curl ca-certificates gnupg lsb-release dpkg-dev
+          curl -fsSL https://www.postgresql.org/media/keys/ACCC4CF8.asc \
+            | sudo gpg --dearmor -o /etc/apt/trusted.gpg.d/pgdg.gpg
+          echo "deb https://apt.postgresql.org/pub/repos/apt $(lsb_release -cs)-pgdg main" \
+            | sudo tee /etc/apt/sources.list.d/pgdg.list
+          sudo apt-get update
+
+      - name: Install build dependencies
+        run: sudo apt-get install -y postgresql-server-dev-${{ matrix.pg }}
+
+      - name: Build .deb
+        env:
+          DEB_MAINTAINER: "Zsolt Parragi <zsolt.parragi@percona.com>"
+          DEB_HOMEPAGE: ${{ github.server_url }}/${{ github.repository }}
+        run: ci/build-deb.sh ${{ matrix.pg }}
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: deb-${{ matrix.os }}-pg${{ matrix.pg }}
+          path: '*.deb'
+          if-no-files-found: error
+
+  release:
+    name: Publish rolling nightly release
+    needs: build-deb
+    runs-on: ubuntu-latest
+    if: github.event_name != 'pull_request'
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          path: debs
+          merge-multiple: true
+
+      - name: Publish nightly release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -eux
+          find debs -name '*.deb' -print
+          gh release delete nightly --cleanup-tag --yes || true
+          gh release create nightly \
+            --target "${GITHUB_SHA}" \
+            --prerelease \
+            --title "Nightly build" \
+            --notes "Automatic nightly .deb build from ${GITHUB_SHA} (built $(date -u +%Y-%m-%d))." \
+            $(find debs -name '*.deb')

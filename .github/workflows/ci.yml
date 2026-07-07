@@ -1,0 +1,93 @@
+name: CI
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  build-test:
+    name: PG ${{ matrix.pg }} on ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-22.04, ubuntu-24.04]
+        pg: ['16', '17', '18']
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Add PGDG apt repository
+        run: |
+          set -eux
+          sudo apt-get update
+          sudo apt-get install -y curl ca-certificates gnupg lsb-release
+          curl -fsSL https://www.postgresql.org/media/keys/ACCC4CF8.asc \
+            | sudo gpg --dearmor -o /etc/apt/trusted.gpg.d/pgdg.gpg
+          echo "deb https://apt.postgresql.org/pub/repos/apt $(lsb_release -cs)-pgdg main" \
+            | sudo tee /etc/apt/sources.list.d/pgdg.list
+          sudo apt-get update
+
+      - name: Install PostgreSQL ${{ matrix.pg }}
+        run: sudo apt-get install -y postgresql-${{ matrix.pg }} postgresql-server-dev-${{ matrix.pg }}
+
+      - name: Build
+        run: make PG_CONFIG=/usr/lib/postgresql/${{ matrix.pg }}/bin/pg_config
+
+      - name: Install
+        run: sudo make install PG_CONFIG=/usr/lib/postgresql/${{ matrix.pg }}/bin/pg_config
+
+      - name: Smoke test
+        run: ci/smoke.sh ${{ matrix.pg }}
+
+  tap-tests:
+    name: TAP tests, PG ${{ matrix.pg }}
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - pg: '16'
+            branch: REL_16_STABLE
+          - pg: '17'
+            branch: REL_17_STABLE
+          - pg: '18'
+            branch: REL_18_STABLE
+          - pg: 'master'
+            branch: master
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential bison flex pkg-config \
+            libreadline-dev zlib1g-dev ccache libipc-run-perl
+
+      - name: Cache ccache
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ccache
+          key: ccache-${{ matrix.pg }}-${{ github.run_id }}
+          restore-keys: ccache-${{ matrix.pg }}-
+
+      - name: Build PostgreSQL (${{ matrix.branch }})
+        run: ci/build-postgres.sh ${{ matrix.branch }} "$HOME/pginst" "$HOME/pgsrc"
+
+      - name: Build and install extension
+        run: |
+          make PG_CONFIG="$HOME/pginst/bin/pg_config"
+          make install PG_CONFIG="$HOME/pginst/bin/pg_config"
+
+      - name: Run TAP tests
+        run: make installcheck PG_CONFIG="$HOME/pginst/bin/pg_config"
+
+      - name: Upload test logs on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: tap-logs-pg${{ matrix.pg }}
+          path: |
+            tmp_check/log
+            tmp_check/**/log

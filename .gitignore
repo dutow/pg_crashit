@@ -1,0 +1,18 @@
+# build artifacts
+*.o
+*.so
+*.bc
+src/*.o
+src/*.bc
+
+# PGXS test/regress output
+results/
+regression.diffs
+regression.out
+tmp_check/
+tmp_check_iso/
+log/
+output_iso/
+
+# autoconf-style build dep files
+.deps/
